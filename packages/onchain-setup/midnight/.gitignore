@@ -1,0 +1,2 @@
+# Compact compiler output (regenerate with `pnpm compact:build`)
+contracts/*/managed

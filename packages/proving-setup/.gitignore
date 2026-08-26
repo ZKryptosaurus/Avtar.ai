@@ -1,0 +1,7 @@
+node_modules
+dist
+*.tsbuildinfo
+*.ptau
+*.zkey
+*_verification_key.json
+*.r1cs

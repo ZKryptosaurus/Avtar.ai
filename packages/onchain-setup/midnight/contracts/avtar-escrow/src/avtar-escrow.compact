@@ -1,0 +1,194 @@
+pragma language_version 0.23;
+
+import CompactStandardLibrary;
+
+
+export circuit reduceToScalar(
+  x: Field,
+  remainder: Uint<200>,
+  quotient: Uint<0..32630925232283005>
+): Field {
+  // 2^200. remainder < 2^200 is enforced by its own type; quotient is capped
+  // one below its true max (2^55-ish) so `remainder + quotient*2^200` can
+  // never wrap Compact's Field modulus for ANY value satisfying these
+  // declared bounds, which is what makes the decomposition unique (no
+  // aliasing) rather than merely "usually correct". The excluded top
+  // quotient value has probability ~2^-57 of ever occurring for a genuine
+  // hash output; callers should treat that (practically unreachable) case as
+  // "resample the nonce and re-sign", same as any other rejection-sampled
+  // scheme.
+  assert(
+    x
+      == (remainder as Field)
+        + (quotient as Field) * (1606938044258990275541962092341162602522202993782792835301376 as Field),
+    "quotient/remainder do not reconstruct x"
+  );
+  return remainder as Field;
+}
+
+// Schnorr verification: message is `transientHash(channelId, totalUnits)`,
+// mirroring the original circom circuit's `voucherHasher`. Returns true iff
+// the caller knows the discrete log of (pubkeyX, pubkeyY).
+export circuit verifyVoucherSignature(
+  pubkeyX: Field,
+  pubkeyY: Field,
+  sigRx: Field,
+  sigRy: Field,
+  message: Field,
+  sigRemainder: Uint<200>,
+  sigQuotient: Uint<0..32630925232283005>,
+  sigS: Field
+): Boolean {
+  const A: JubjubPoint = constructJubjubPoint(pubkeyX, pubkeyY);
+  const R: JubjubPoint = constructJubjubPoint(sigRx, sigRy);
+  const h = transientHash<Vector<5, Field>>([sigRx, sigRy, pubkeyX, pubkeyY, message]);
+  const c = reduceToScalar(h, sigRemainder, sigQuotient);
+  const lhs = ecMulGenerator(sigS);
+  const rhs = ecAdd(R, ecMul(A, c));
+  return lhs == rhs;
+}
+
+// ---------------------------------------------------------------------------
+// Channel / escrow state
+// ---------------------------------------------------------------------------
+
+struct ChannelRecord {
+  rateCommitment: Bytes<32>;
+  consumerPubkeyX: Field;
+  consumerPubkeyY: Field;
+  depositor: Bytes<32>;
+  provider: Bytes<32>;
+  token: Bytes<32>;
+  closed: Boolean;
+}
+
+export ledger whitelistedTokens: Set<Bytes<32>>;
+export ledger channels: Map<Field, ChannelRecord>;
+export ledger balances: Map<Bytes<32>, Uint<128>>;
+export ledger nullifiers: Set<Bytes<32>>;
+
+circuit balanceKey(depositor: Bytes<32>, token: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([depositor, token]);
+}
+
+export circuit whitelistToken(token: Bytes<32>): [] {
+  whitelistedTokens.insert(disclose(token));
+}
+
+export circuit openChannel(
+  channelId: Field,
+  rateCommitment: Bytes<32>,
+  consumerPubkeyX: Field,
+  consumerPubkeyY: Field,
+  depositor: Bytes<32>,
+  provider: Bytes<32>,
+  token: Bytes<32>,
+  amount: Uint<128>
+): [] {
+  assert(!channels.member(disclose(channelId)), "channel already registered");
+  assert(whitelistedTokens.member(disclose(token)), "token not whitelisted");
+
+  channels.insert(
+    disclose(channelId),
+    disclose(ChannelRecord {
+      rateCommitment: rateCommitment,
+      consumerPubkeyX: consumerPubkeyX,
+      consumerPubkeyY: consumerPubkeyY,
+      depositor: depositor,
+      provider: provider,
+      token: token,
+      closed: false
+    })
+  );
+
+  receiveUnshielded(disclose(token), disclose(amount));
+
+  const key = balanceKey(depositor, token);
+  const current = balances.member(disclose(key)) ? balances.lookup(disclose(key)) : 0;
+  balances.insert(disclose(key), disclose((current + amount) as Uint<128>));
+}
+
+export circuit settle(
+  channelId: Field,
+  rate: Uint<64>,
+  rateBlind: Field,
+  totalUnits: Uint<64>,
+  channelSecret: Field,
+  sigRx: Field,
+  sigRy: Field,
+  sigRemainder: Uint<200>,
+  sigQuotient: Uint<0..32630925232283005>,
+  sigS: Field,
+  escrowAmount: Uint<128>,
+  depositor: Bytes<32>,
+  provider: Bytes<32>,
+  token: Bytes<32>
+): [] {
+  assert(channels.member(disclose(channelId)), "unknown channel");
+  const record = channels.lookup(disclose(channelId));
+  assert(!record.closed, "channel closed");
+  assert(record.depositor == depositor, "depositor mismatch");
+  assert(record.provider == provider, "provider mismatch");
+  assert(record.token == token, "token mismatch");
+
+  const rateCommitment = persistentHash<Vector<2, Field>>([rate as Field, rateBlind]);
+  assert(record.rateCommitment == rateCommitment, "rate commitment mismatch");
+
+  const message = transientHash<Vector<2, Field>>([channelId, totalUnits as Field]);
+  const sigValid = verifyVoucherSignature(
+    record.consumerPubkeyX,
+    record.consumerPubkeyY,
+    sigRx,
+    sigRy,
+    message,
+    sigRemainder,
+    sigQuotient,
+    sigS
+  );
+  assert(sigValid, "invalid voucher signature");
+
+  const settlementAmount = (totalUnits * rate) as Uint<128>;
+  assert(settlementAmount <= escrowAmount, "settlement exceeds escrow");
+
+  const nullifier = persistentHash<Vector<2, Field>>([channelId, channelSecret]);
+  assert(!nullifiers.member(disclose(nullifier)), "nullifier already spent");
+  nullifiers.insert(disclose(nullifier));
+
+  const key = balanceKey(depositor, token);
+  assert(balances.member(disclose(key)), "no balance for depositor/token");
+  const currentBalance = balances.lookup(disclose(key));
+  assert(escrowAmount <= currentBalance, "insufficient balance");
+  balances.insert(disclose(key), disclose((currentBalance - escrowAmount) as Uint<128>));
+
+  if (disclose(settlementAmount > 0)) {
+    sendUnshielded(
+      disclose(token),
+      disclose(settlementAmount),
+      disclose(right<ContractAddress, UserAddress>(UserAddress { bytes: provider }))
+    );
+  }
+
+  const refundAmount = (escrowAmount - settlementAmount) as Uint<128>;
+  if (disclose(refundAmount > 0)) {
+    sendUnshielded(
+      disclose(token),
+      disclose(refundAmount),
+      disclose(right<ContractAddress, UserAddress>(UserAddress { bytes: depositor }))
+    );
+  }
+}
+
+export circuit refund(depositor: Bytes<32>, token: Bytes<32>): [] {
+  assert(whitelistedTokens.member(disclose(token)), "token not whitelisted");
+  const key = balanceKey(depositor, token);
+  assert(balances.member(disclose(key)), "no balance to refund");
+  const balance = balances.lookup(disclose(key));
+  assert(disclose(balance > 0), "no balance to refund");
+
+  sendUnshielded(
+    disclose(token),
+    disclose(balance),
+    disclose(right<ContractAddress, UserAddress>(UserAddress { bytes: depositor }))
+  );
+  balances.insert(disclose(key), 0);
+}
