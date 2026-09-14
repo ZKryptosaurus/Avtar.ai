@@ -20,8 +20,8 @@ import {
 export type FieldInput = string | number | bigint;
 
 /**
- * Voucher signing for the Midnight port of `slate-escrow` (see
- * `packages/onchain-setup/midnight/contracts/slate-escrow/src/slate-escrow.compact`).
+ * Voucher signing for `avtar-escrow` (see
+ * `packages/onchain-setup/midnight/contracts/avtar-escrow/src/avtar-escrow.compact`).
  *
  * Midnight's Compact language has no built-in EdDSA/Schnorr verifier, so the
  * contract hand-rolls Schnorr-over-Jubjub using the embedded curve ops
@@ -93,7 +93,7 @@ export interface ConsumerPublicKey {
   y: bigint;
 }
 
-/** A Schnorr-over-Jubjub voucher signature, in the shape `slate-escrow.settle` expects. */
+/** A Schnorr-over-Jubjub voucher signature accepted by `avtar-escrow.settle`. */
 export interface VoucherSignature {
   sigRx: bigint;
   sigRy: bigint;
@@ -115,7 +115,7 @@ export function deriveConsumerPublicKey(privateKey: FieldInput): ConsumerPublicK
 /**
  * Sign `message` (a field element, typically `transientHash(channelId, totalUnits)`
  * — see {@link computeVoucherMessage}) with a bounded-scalar Schnorr-over-Jubjub
- * signature. Verified on-chain by `slate-escrow.settle` via `verifyVoucherSignature`.
+ * signature. Verified by `avtar-escrow.settle` via `verifyVoucherSignature`.
  */
 export function signVoucher(privateKey: FieldInput, message: FieldInput): VoucherSignature {
   const sk = toBigInt("privateKey", privateKey);
@@ -137,7 +137,7 @@ export function signVoucher(privateKey: FieldInput, message: FieldInput): Vouche
  * Pure-TS re-implementation of the contract's `verifyVoucherSignature`, for
  * sanity-checking a voucher before submitting it. This must stay exactly in
  * sync with `verifyVoucherSignature`/`reduceToScalar` in
- * `slate-escrow.compact` — the contract itself is the actual verifier; treat
+ * `avtar-escrow.compact` — the contract itself is the actual verifier; treat
  * this as a fast-fail preflight, not the source of truth.
  */
 export function verifyVoucherSignature(
@@ -179,7 +179,7 @@ export function computeVoucherMessage(channelId: FieldInput, totalUnits: FieldIn
   return hashFields([toBigInt("channelId", channelId), toBigInt("totalUnits", totalUnits)]);
 }
 
-/** A signed metering voucher, ready to pass into `slate-escrow.settle`. */
+/** A signed metering voucher, ready to pass into `avtar-escrow.settle`. */
 export interface Voucher {
   channelId: bigint;
   totalUnits: bigint;
