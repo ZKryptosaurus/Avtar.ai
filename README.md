@@ -1,211 +1,94 @@
 # Avtar.ai — Midnight Agent Marketplace
 
-Privacy-preserving agent-to-agent service marketplace built on Midnight blockchain with x402 micropayment protocol.
+Avtar.ai is a prototype for metered agent services with zero-knowledge settlement
+on Midnight. A consumer buys weather, crypto-price, and translation calls from a
+provider, signs cumulative usage vouchers, and settles the session through the
+`avtar-escrow` Compact contract.
 
-## Overview
-
-Avtar enables AI agents to sell services (weather, crypto prices, translation) to other agents through metered micropayments. Built for the Midnight Wave 1 Buildathon.
-
-### Key Features
-
-- **Zero-knowledge settlement**: All payments settled through compiled Compact circuit with Schnorr-over-Jubjub signatures
-- **Privacy-preserving**: Rate commitments and nullifiers hide transaction details while proving correctness
-- **x402 protocol**: HTTP authorization layer for metered API access
-- **Local simulation mode**: Full end-to-end testing without live blockchain
-- **Atomic units**: All amounts in smallest indivisible units (no decimals)
+The HTTP demo supports public Preprod with a local proof server. A separate local
+simulation runs the compiled circuit against an in-memory ledger.
 
 ## Architecture
 
-### System Overview
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         AVTAR.AI SYSTEM                          │
-└─────────────────────────────────────────────────────────────────┘
-
-┌──────────────┐                              ┌──────────────┐
-│   CONSUMER   │                              │   PROVIDER   │
-│    AGENT     │                              │    AGENT     │
-└──────┬───────┘                              └──────┬───────┘
-       │                                             │
-       │  1. Open x402 channel                       │
-       ├────────────────────────────────────────────>│
-       │     (rate commitment, escrow)               │
-       │                                             │
-       │  2. Sign voucher (off-chain metering)       │
-       │<────────────────────────────────────────────┤
-       │     (Poseidon(rate, rateBlind))             │
-       │                                             │
-       │  3. Call services                           │
-       ├────────────────────────────────────────────>│
-       │     • get_weather                           │
-       │     • get_crypto_price                      │
-       │     • translate_text                        │
-       │<────────────────────────────────────────────┤
-       │  4. Receive responses                       │
-       │                                             │
-       │  5. Settle with ZK proof                    │
-       ├────────────────────────────────────────────>│
-       │     (Schnorr signature, nullifier)          │
-       └─────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│                    CHAIN CLIENT (Two Tiers)                      │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌──────────────────────┐      ┌──────────────────────┐        │
-│  │  LOCAL SIMULATION    │      │   LIVE PREPROD       │        │
-│  │  MIDNIGHT_LOCAL_SIM  │      │   MIDNIGHT_WALLET    │        │
-│  │      =true           │      │   _SEED +            │        │
-│  │                      │      │   MIDNIGHT_AVTAR     │        │
-│  │  • Compiled circuit  │      │   _ESCROW_ADDRESS    │        │
-│  │  • In-memory ledger  │      │                      │        │
-│  │  • Real crypto       │      │  • Deployed contract │        │
-│  │  • No network        │      │  • Midnight network  │        │
-│  │                      │      │  • Transaction sub   │        │
-│  └──────────────────────┘      └──────────────────────┘        │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│                  AVTAR-ESCROW COMPACT CIRCUIT                    │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  Circuits:                                                       │
-│  • whitelistToken(token)                                         │
-│  • openChannel(channelId, rateCommitment, consumerPubkey, ...)  │
-│  • settle(channelId, rate, rateBlind, totalUnits, signature)    │
-│  • refund(depositor, token)                                      │
-│                                                                  │
-│  Privacy Model:                                                  │
-│  • Rate commitment: Poseidon(rate, rateBlind)                   │
-│  • Nullifier: Poseidon(channelId, channelSecret)                │
-│  • Schnorr-over-Jubjub signatures                               │
-│  • Channel closure tracking (prevents repeat settlement)        │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant C as Consumer
+    participant P as Provider
+    participant M as Midnight Preprod
+    C->>P: Discover terms (POST /agent/open)
+    P-->>C: 402 with rate, recipient, token
+    C->>M: Fund channel, bind terms and consumer public key
+    M-->>C: Confirm opening transaction
+    C->>P: Open HTTP session with X-PAYMENT
+    P-->>C: Register metering channel
+    loop Each service call
+        C->>C: Sign cumulative usage voucher
+        C->>P: Voucher and tool request
+        P->>P: Verify voucher and run service
+        P-->>C: Result and accepted usage
+        C->>C: Persist accepted voucher
+    end
+    C->>C: Prove settlement locally
+    C->>M: Submit settlement transaction
+    M->>M: Check proof, pay provider, refund depositor, close channel
+    M-->>C: Confirm settlement transaction
 ```
 
-### Component Architecture
+The provider calls Open-Meteo, CoinGecko, and MyMemory through HTTP adapters. The
+consumer uses either a built-in keyword router or OpenAI for tool selection.
+All three tools share one escrow channel and one configured payment recipient.
+Tool labels in the response do not represent separate on-chain recipients.
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                        PACKAGES                                   │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  agent-core          Shared types, chain clients, channel logic  │
-│  ├── chain.ts        ChainClient interface                       │
-│  ├── live-chain.ts   LiveAvtarEscrowChainClient (Preprod)        │
-│  ├── env.ts          Two-tier selection logic                    │
-│  └── channel.ts      ServiceChannel, voucher signing             │
-│                                                                   │
-│  proving-setup       Circuit compilation, witness generation     │
-│  └── midnight.ts     Schnorr signatures, Poseidon hashes         │
-│                                                                   │
-│  onchain-setup       Contract deployment, configuration          │
-│  ├── midnight/       avtar-escrow.compact (compiled circuit)     │
-│  ├── deploy.mjs      Preprod deployment script                   │
-│  └── midnight-*.ts   Network providers, wallet integration       │
-│                                                                   │
-└──────────────────────────────────────────────────────────────────┘
+| Component | Responsibility |
+| --- | --- |
+| `packages/agent-core` | Consumer/provider meters, voucher transport, SQLite recovery state, local and live chain clients |
+| `packages/proving-setup` | Schnorr-over-Jubjub voucher signing and Compact-compatible hashing |
+| `packages/onchain-setup` | Compact contract, compiled assets, wallet/provider adapters, deployment and recovery scripts |
+| `agents/provider` | HTTP 402 discovery, voucher verification, and service API calls |
+| `agents/consumer` | Tool selection, escrow funding, persisted metering, and settlement |
 
-┌──────────────────────────────────────────────────────────────────┐
-│                         AGENTS                                    │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  provider            Service provider with x402 HTTP server      │
-│  ├── server.ts       x402 protocol implementation                │
-│  ├── weather.ts      get_weather service                         │
-│  ├── crypto.ts       get_crypto_price service                    │
-│  ├── translation.ts  translate_text service                      │
-│  └── payments.ts     Authorization verification                  │
-│                                                                   │
-│  consumer            Service consumer with settlement            │
-│  ├── demo.ts         End-to-end demo (both tiers)                │
-│  ├── session.ts      x402 session management                     │
-│  └── agent.ts        ServiceAgent with tool calling              │
-│                                                                   │
-└──────────────────────────────────────────────────────────────────┘
-```
+## Settlement and Privacy
 
-### Data Flow
+The consumer signs `transientHash(channelId, totalUnits)`. The contract verifies
+the Schnorr-over-Jubjub signature, the rate commitment, the channel's recorded
+escrow amount, and `totalUnits × rate ≤ escrow`. It pays the provider, refunds the
+remainder, records a nullifier, and sets `closed = true`. The closed-channel guard
+rejects repeat settlement even if the caller supplies a different channel secret.
 
-```
-CONSUMER                    PROVIDER                   MIDNIGHT
-   │                           │                           │
-   │  1. Open channel          │                           │
-   │  (rate commitment)        │                           │
-   ├──────────────────────────>│                           │
-   │                           │  2. Validate & accept     │
-   │                           ├──────────────────────────>│
-   │                           │                           │
-   │  3. Request service       │                           │
-   │  (X-PAYMENT header)       │                           │
-   ├──────────────────────────>│                           │
-   │                           │  4. Verify authorization  │
-   │                           │  5. Sign voucher          │
-   │  6. Return voucher        │                           │
-   │<──────────────────────────┤                           │
-   │                           │                           │
-   │  7. Call service          │                           │
-   ├──────────────────────────>│                           │
-   │                           │  8. Execute service       │
-   │  9. Return result         │                           │
-   │<──────────────────────────┤                           │
-   │                           │                           │
-   │  10. Settle               │                           │
-   │  (voucher signature)      │                           │
-   ├──────────────────────────────────────────────────────>│
-   │                           │                           │
-   │                           │  11. Verify & transfer    │
-   │                           │<──────────────────────────┤
-   │                           │                           │
-```
+The rate commitment is `persistentHash(rate, rateBlind)` and the nullifier is
+`persistentHash(channelId, channelSecret)`. These are the Compact runtime APIs used
+by both the TypeScript code and the contract.
 
-### Privacy Architecture
+| Data | Visibility in this implementation |
+| --- | --- |
+| Channel ID, consumer public key, depositor, provider, token, escrow, commitment, closure status | Public contract state |
+| Settlement amount, refund amount, recipient addresses, nullifier | Public on-chain |
+| Rate and cumulative usage | Known to the consumer and provider; rate is also advertised in HTTP discovery |
+| Rate blind, channel secret, consumer signing key | Held by the consumer; recovery material is stored in its local SQLite database |
+| Tool requests and responses | Off-chain, visible to the agents and relevant service API |
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    ZERO-KNOWLEDGE PRIVACY                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  PUBLIC (on-chain)              PRIVATE (off-chain)              │
-│  ─────────────────              ───────────────────              │
-│  • Channel ID                   • Agreed rate                    │
-│  • Rate commitment              • Rate blind                     │
-│  • Consumer pubkey              • Channel secret                 │
-│  • Escrow amount                • Consumer private key           │
-│  • Nullifier                    • Total units (until settle)     │
-│  • Settlement amount                                         │
-│                                                                  │
-│  VERIFIABLE WITHOUT REVEALING:                                   │
-│  ✓ Rate commitment matches agreed rate                          │
-│  ✓ Voucher signature is valid                                   │
-│  ✓ Nullifier is unique (no double-spend)                        │
-│  ✓ Channel not already closed                                   │
-│  ✓ Settlement ≤ escrow                                          │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
+Rate and usage are not explicitly disclosed as ledger fields by `settle`, but the
+public payout and advertised rate can reveal total usage. This demo does not hide
+payment amounts or guarantee usage privacy. Schnorr signatures authenticate
+vouchers; the Compact proof establishes the settlement circuit's execution.
 
-### Components
+### Prototype Limitations
 
-- **`packages/agent-core`**: Shared types, channel state, voucher signing
-- **`packages/proving-setup`**: Midnight circuit compilation and witness generation
-- **`agents/provider`**: Service provider with x402 HTTP server
-- **`agents/consumer`**: Service consumer with settlement logic
-
-### Privacy Model
-
-- **Rate commitment**: `Poseidon(rate, rateBlind)` — hides agreed rate
-- **Nullifier**: `Poseidon(channelId, channelSecret)` — prevents double-spending
-- **Schnorr signatures**: Prove voucher authenticity without revealing keys
-- **Compiled circuit**: `avtar-escrow.compact` enforces all constraints
+- The current HTTP authorization verifier accepts any nonempty `X-PAYMENT` header.
+  The provided consumer funds a real channel, but the provider does not independently
+  verify that funding on-chain before serving. This is an x402-style demo transport,
+  not a verified facilitator payment integration.
+- The exported `refund(depositor, token)` circuit refunds the pooled balance for
+  that pair without closing its channels or checking caller authorization. It can
+  invalidate outstanding settlement obligations; the normal demo uses `settle`
+  for channel-specific refunds.
+- The provider keeps its meter registry in memory. The consumer persists recovery
+  material, including its channel signing key, in SQLite. Keep that database private.
 
 ## Quick Start
 
 Run all commands from the repository root (`Avtar.ai`). Use Node.js 25.8.1
-(the version tested here), pnpm, and the Midnight Compact compiler. Live Preprod
+(the version tested here), pnpm 10.12.1, and the Midnight Compact compiler. Live Preprod
 also requires Docker, a funded depositor wallet, and a deployed contract.
 
 ### Build
@@ -243,6 +126,7 @@ MIDNIGHT_DEPOSITOR_ADDRESS=<depositor's 64-character hex address payload>
 MIDNIGHT_PROVIDER_ADDRESS=<provider's 64-character hex address payload>
 MIDNIGHT_TOKEN_ADDRESS=<64-character tNIGHT token type>
 MIDNIGHT_RATE_ATOMIC=100
+MIDNIGHT_TOKEN_SYMBOL=tNIGHT
 ```
 
 Address settings take decoded 32-byte hexadecimal payloads, not `mn_addr_preprod…`
@@ -300,13 +184,16 @@ curl -sS -X POST http://localhost:4022/settle
 ```
 
 Three successful calls at 100 atomic units each pay **300 atomic tNIGHT** to the
-provider and refund **700** to the depositor. The settlement response includes the
-confirmed transaction ID. Actual service results depend on the external APIs.
+provider and refund **700** to the depositor. Check that the settlement response has `settled: true` and a `settleTx`
+containing the confirmed transaction ID; `ok: true` alone does not mean settlement
+succeeded. Actual service results depend on the external APIs.
 
 If 1AM reports `429` or a pending sponsorship transaction, keep the consumer
 running, wait 60 seconds, and retry only `/settle`. Do not open another channel to
 retry settlement. If the process has exited, retain its metering database and use
 the [settlement recovery command](packages/onchain-setup/midnight/README.md).
+With these root-directory commands, the default database is `artifacts/metering.db`;
+`METER_DB_PATH` overrides it.
 Restart both servers after changing their environment settings.
 
 ### Local Simulation
@@ -314,7 +201,8 @@ Restart both servers after changing their environment settings.
 For a single-process demo using the compiled circuit and an in-memory ledger:
 
 ```bash
-OPENAI_API_KEY= MIDNIGHT_LOCAL_SIM=true pnpm --filter @avtar/agent-consumer demo
+OPENAI_API_KEY= MIDNIGHT_LOCAL_SIM=true pnpm --filter @avtar/agent-consumer demo \
+  "Weather in Tokyo, ETH price in USD, translate good morning into Japanese"
 ```
 
 This runs the provider tools in-process; it does not start the HTTP servers. It
@@ -332,105 +220,55 @@ For the live HTTP demo with your configured provider, use the steps above.
 `pnpm --filter @avtar/onchain-setup midnight:live-check` is a separate funded
 Preprod integration check: it deliberately overrides the provider to the depositor's
 own address and therefore does not test payment to your separate provider wallet.
+It also requires `packages/onchain-setup/.midnight/preprod/deployment.json` from a
+previous deployment.
 
-## Buildathon Submission
+## Buildathon
 
-**Wave 1**: August 29 – September 16, 2026  
-**Grant Pool**: 3,500 USDT  
-**Track**: Privacy-enhanced Midnight ZK application
-
-### Judging Criteria (from Akindo listing)
-
-- **Engineering & Implementation** (emphasis): Clean architecture, working code
-- **Quality Assurance & Reliability** (emphasis): End-to-end verification, error handling
-- **Innovation**: Novel use of ZK proofs for agent micropayments
-- **Privacy**: Rate commitments and nullifiers hide transaction details
-
-### Deliverables
-
-- [x] Working application with local simulation mode
-- [x] Compiled Midnight circuit (`avtar-escrow.compact`)
-- [x] End-to-end test (provider → consumer → settlement)
-- [x] Documentation (this README)
-- [ ] Demo video (3-5 min)
-- [ ] Slide deck (~10 slides)
-
-## Technical Details
-
-### Why Midnight?
-
-Midnight's Compact language enables privacy-preserving smart contracts with:
-- **Schnorr-over-Jubjub signatures**: Efficient ZK-friendly signatures
-- **Poseidon hash function**: ZK-optimized commitment scheme
-- **Compiled circuits**: Enforce constraints at settlement time
-- **Local simulation**: Full testing without live blockchain
-
-### Why x402?
-
-x402 is an HTTP authorization protocol for metered API access:
-- **Standard HTTP**: Works with existing web infrastructure
-- **Metered access**: Pay per call, not subscription
-- **Authorization-only**: Settlement happens off-chain with ZK proofs
-- **Agent-friendly**: Designed for machine-to-machine payments
-
-### Atomic Units
-
-All amounts use atomic units (smallest indivisible unit):
-- No decimal places (unlike Stellar's 7-decimal XLM)
-- Simplified arithmetic (BigInt, not parseUnits)
-- 32-byte addresses (not Stellar's 56-char accounts)
-- Rate = 100 atomic units, not 0.0000100 tokens
+Built for Midnight Buildathon Wave 1. The official schedule lists the first build
+window as **August 27–September 16**, with a **$3,500** allocation.
+See the [Midnight schedule](https://midnight.network/hackathon/buildathon) and
+[Akindo event](https://app.akindo.io/wave-hacks/jaMZjqPOBsLXvjdG) for submission
+requirements and deadlines. Successful local checks do not constitute a submitted
+entry; the demo video, deck, and submission must be published separately.
 
 ## Project Structure
 
-```
+```text
 Avtar.ai/
 ├── packages/
-│   ├── agent-core/          # Shared types and utilities
-│   │   ├── src/
-│   │   │   ├── channel.ts   # Channel state management
-│   │   │   ├── voucher.ts   # Voucher signing and verification
-│   │   │   └── env.ts       # Environment variable parsing
-│   │   └── package.json
-│   └── proving-setup/       # Midnight circuit compilation
-│       ├── src/
-│       │   └── midnight.ts  # Circuit witness generation
-│       └── circuits/
-│           └── avtar-escrow.compact
+│   ├── agent-core/src/
+│   │   ├── channel.ts          # Consumer and provider metering
+│   │   ├── x402-channel.ts     # HTTP voucher transport
+│   │   ├── voucher-wire.ts     # Voucher serialization
+│   │   ├── db.ts               # SQLite recovery state
+│   │   ├── chain.ts            # Local simulation
+│   │   └── live-chain.ts       # Confirmed Midnight transactions
+│   ├── proving-setup/src/midnight.ts  # Signing and hashing
+│   └── onchain-setup/
+│       ├── src/               # Wallet and network adapters
+│       └── midnight/
+│           ├── contracts/avtar-escrow/src/avtar-escrow.compact
+│           ├── deploy.mjs
+│           ├── selfcheck.mjs
+│           ├── wallet-selfcheck.mjs
+│           ├── live-selfcheck.mjs
+│           └── recover-settlement.mjs
 ├── agents/
-│   ├── provider/            # Service provider
-│   │   ├── src/
-│   │   │   ├── server.ts    # x402 HTTP server
-│   │   │   ├── weather.ts   # Weather service (mock)
-│   │   │   ├── crypto.ts    # Crypto price service (mock)
-│   │   │   ├── translation.ts # Translation service (mock)
-│   │   │   ├── payments.ts  # Authorization verification
-│   │   │   └── config.ts    # Provider configuration
-│   │   └── package.json
-│   └── consumer/            # Service consumer
-│       ├── src/
-│       │   ├── session.ts   # x402 session management
-│       │   ├── demo.ts      # End-to-end demo
-│       │   └── x402-demo.ts # x402 protocol demo
-│       └── package.json
-└── docs/
-    └── midnight-buildathon-plan.md
+│   ├── provider/src/          # HTTP server and real service adapters
+│   └── consumer/src/          # HTTP server, agent, and CLI demos
+└── README.md
 ```
 
-## Porting Notes
+## Amounts and Addresses
 
-This project was ported from Stellar/Soroban to Midnight. Key differences:
+The app performs payment arithmetic with integer atomic units using `bigint`.
+A rate of `100` means 100 atomic units per metered call. Token display decimals
+are separate from this integer accounting.
 
-| Feature | Stellar/Soroban | Midnight |
-|---------|----------------|----------|
-| Signatures | Ed25519 | Schnorr-over-Jubjub |
-| Hash function | SHA-256 | Poseidon |
-| Address format | 56-char base32 | 32-byte hex (0x...) |
-| Decimal places | 7 (stroops) | 0 (atomic units) |
-| Proof system | Groth16 | Compiled circuit |
-| Test mode | Mock fallback | Local simulation required |
-
-All legacy terminology (Stellar, Soroban, Drongo, Slate, XLM) has been removed.
+Wallets display Preprod unshielded addresses as `mn_addr_preprod…`; the contract
+and app configuration use their decoded 32-byte payloads encoded as 64 hex
+characters. The settlement token setting is a token type, not a wallet address.
 
 ## License
 
@@ -438,6 +276,7 @@ All legacy terminology (Stellar, Soroban, Drongo, Slate, XLM) has been removed.
 
 ## Links
 
-- **Buildathon**: [Akindo Wave 1](https://app.akindo.io/wave-hacks/jaMZjqPOBsLXvjdG)
-- **Midnight**: [midnight.network](https://midnight.network)
-- **x402 Protocol**: [x402.org](https://x402.org)
+- [Midnight Buildathon](https://app.akindo.io/wave-hacks/jaMZjqPOBsLXvjdG)
+- [Deployment and recovery](packages/onchain-setup/midnight/README.md)
+- [Midnight](https://midnight.network)
+- [x402](https://x402.org)
