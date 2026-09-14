@@ -6,6 +6,7 @@
  * every endpoint is required from the environment.
  */
 export interface MidnightConfig {
+  networkId: string;
   /** GraphQL HTTP endpoint of the Midnight indexer. */
   indexerUrl: string;
   /** GraphQL WebSocket endpoint of the Midnight indexer (subscriptions). */
@@ -16,6 +17,8 @@ export interface MidnightConfig {
   proofServerUrl: string;
   /** Deployed `avtar-escrow` contract address (from `pnpm midnight:deploy`). */
   contractAddress: string;
+  /** BIP-39 mnemonic or 32/64-byte hex seed for deployment. */
+  walletSeed?: string;
 }
 
 /** Local proof server default port used by Midnight's `docker run midnightnetwork/proof-server`. */
@@ -27,16 +30,18 @@ export function midnightConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): MidnightConfig {
   return {
+    networkId: env.MIDNIGHT_NETWORK_ID ?? "preprod",
     indexerUrl: env.MIDNIGHT_INDEXER_URL ?? "",
     indexerWsUrl: env.MIDNIGHT_INDEXER_WS_URL ?? "",
     nodeUrl: env.MIDNIGHT_NODE_URL ?? "",
     proofServerUrl: env.MIDNIGHT_PROOF_SERVER_URL ?? DEFAULT_LOCAL_PROOF_SERVER_URL,
     contractAddress: env.MIDNIGHT_AVTAR_ESCROW_ADDRESS ?? "",
+    walletSeed: env.MIDNIGHT_WALLET_SEED,
     ...overrides,
   };
 }
 
-export function assertMidnightConfig(config: MidnightConfig): void {
+export function assertMidnightConfig(config: MidnightConfig, requireContractAddress = true): void {
   if (!config.indexerUrl) throw new Error("MidnightConfig.indexerUrl is required (MIDNIGHT_INDEXER_URL)");
   if (!config.indexerWsUrl) {
     throw new Error("MidnightConfig.indexerWsUrl is required (MIDNIGHT_INDEXER_WS_URL)");
@@ -45,7 +50,7 @@ export function assertMidnightConfig(config: MidnightConfig): void {
   if (!config.proofServerUrl) {
     throw new Error("MidnightConfig.proofServerUrl is required (MIDNIGHT_PROOF_SERVER_URL)");
   }
-  if (!config.contractAddress) {
+  if (requireContractAddress && !config.contractAddress) {
     throw new Error(
       "MidnightConfig.contractAddress is required (MIDNIGHT_AVTAR_ESCROW_ADDRESS) — run `pnpm midnight:deploy` first",
     );

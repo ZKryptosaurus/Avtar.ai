@@ -1,0 +1,11 @@
+packages:
+  - "packages/*"
+  - "agents/*"
+  - "web"
+allowBuilds:
+  blake-hash: true
+  esbuild: true
+
+overrides:
+  "@midnight-ntwrk/ledger-v8": 8.1.0
+  "@midnight-ntwrk/onchain-runtime-v3": 3.0.0
