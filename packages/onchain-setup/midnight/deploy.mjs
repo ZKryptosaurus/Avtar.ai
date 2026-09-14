@@ -59,7 +59,7 @@ try {
       const recipe = await wallet.registerNightUtxosForDustGeneration(
         coins, unshieldedKeystore.getPublicKey(), (data) => unshieldedKeystore.signData(data),
       );
-      console.log("DUST registration transaction:", await wallet.submitTransaction(await wallet.finalizeRecipe(recipe)));
+      console.log("DUST registration transaction:", await ctx.submitTransaction(await wallet.finalizeRecipe(recipe)));
     }
     console.log("Waiting for DUST to accrue...");
     state = await waitForWalletState(wallet, (s) => s.dust.balance(new Date()) > 0n);

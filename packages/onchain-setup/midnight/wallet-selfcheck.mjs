@@ -33,6 +33,7 @@ const ttl = new Date();
 const ctx = {
   shieldedSecretKeys: {}, dustSecretKey: {},
   unshieldedKeystore: { signData: () => "signature" },
+  async submitTransaction(input) { assert.equal(input, finalized); calls.push("submit"); return "tx-id"; },
   wallet: {
     async balanceUnboundTransaction(input, keys, options) {
       assert.equal(input, tx); assert.equal(keys, ctx); assert.equal(options.ttl, ttl);
@@ -122,6 +123,8 @@ try {
   await assert.rejects(sponsored.balanceTx({ serialize: () => unbound.serialize(), identifiers: () => ["changed"] }), /changed the deployment/);
   globalThis.fetch = async () => Response.json({ txBytes: "not hex" });
   await assert.rejects(sponsored.balanceTx(unbound), /Invalid sponsored transaction encoding/);
+  globalThis.fetch = async () => Response.json({ error: "A balance transaction is already pending" }, { status: 429, headers: { "retry-after": "60" } });
+  await assert.rejects(sponsored.balanceTx(unbound), /HTTP 429; retry after 60; A balance transaction is already pending/);
   globalThis.fetch = async () => new Response(null, { status: 503 });
   await assert.rejects(sponsored.balanceTx(unbound), /HTTP 503/);
 } finally {

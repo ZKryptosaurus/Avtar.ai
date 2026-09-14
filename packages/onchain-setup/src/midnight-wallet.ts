@@ -1,10 +1,10 @@
+import "./websocket.js";
 import { mnemonicToSeedSync, validateMnemonic } from "bip39";
 import { filter, firstValueFrom, timeout } from "rxjs";
-import WebSocket from "ws";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DustSecretKey, LedgerParameters, Transaction, ZswapSecretKeys, type Binding, type Proof, type SignatureEnabled } from "@midnight-ntwrk/ledger-v8";
+import { DustSecretKey, LedgerParameters, Transaction, ZswapSecretKeys, type Binding, type Proof, type SignatureEnabled, type FinalizedTransaction } from "@midnight-ntwrk/ledger-v8";
 import { InMemoryTransactionHistoryStorage } from "@midnight-ntwrk/wallet-sdk-abstractions";
 import { DustWallet } from "@midnight-ntwrk/wallet-sdk-dust-wallet";
 import { WalletFacade, WalletEntrySchema, mergeWalletEntries, type FacadeState } from "@midnight-ntwrk/wallet-sdk-facade";
@@ -25,8 +25,6 @@ export function parseWalletSeed(value = ""): Buffer {
 }
 
 export async function buildMidnightWallet(config: MidnightConfig, seed: Uint8Array) {
-  // Use the Node WebSocket implementation expected by the Midnight SDK.
-  globalThis.WebSocket = WebSocket as unknown as typeof globalThis.WebSocket;
   const result = HDWallet.fromSeed(seed);
   if (result.type !== "seedOk") throw new Error("Cannot initialize Midnight HD wallet");
   const derived = result.hdWallet.selectAccount(0)
@@ -59,6 +57,12 @@ export async function buildMidnightWallet(config: MidnightConfig, seed: Uint8Arr
     wsUrl.searchParams.set("session_token", session.token);
     config.indexerUrl = indexerUrl.toString();
     config.indexerWsUrl = wsUrl.toString();
+    const nodeUrl = new URL(config.nodeUrl);
+    if (nodeUrl.hostname === indexerUrl.hostname && nodeUrl.pathname === '/rpc/midnight') {
+      if (!['https:', 'wss:'].includes(nodeUrl.protocol)) throw new Error('1AM node URL must use HTTPS or WSS');
+      nodeUrl.searchParams.set('session_token', session.token);
+      config.nodeUrl = nodeUrl.toString();
+    }
   }
   const stateDir = fileURLToPath(new URL("../.midnight/", import.meta.url));
   const stateFile = join(stateDir, `${unshieldedKeystore.getBech32Address()}.json`);
@@ -79,6 +83,12 @@ export async function buildMidnightWallet(config: MidnightConfig, seed: Uint8Arr
   };
   const wallet = await WalletFacade.init({
     configuration,
+    // Submit through our HTTP MidnightProvider; do not start the SDK's unused
+    // WebSocket submission client (which also logs authenticated endpoint URLs).
+    submissionService: () => ({
+      async submitTransaction() { throw new Error('Use the MidnightProvider HTTP submission path'); },
+      async close() {},
+    }),
     shielded: (cfg) => saved ? ShieldedWallet(cfg).restore(saved.shielded) : ShieldedWallet(cfg).startWithSecretKeys(shieldedSecretKeys),
     unshielded: (cfg) => saved ? UnshieldedWallet(cfg).restore(saved.unshielded) : UnshieldedWallet(cfg).startWithPublicKey(PublicKey.fromKeyStore(unshieldedKeystore)),
     dust: (cfg) => saved ? DustWallet(cfg).restore(saved.dust) : DustWallet(cfg).startWithSecretKey(dustSecretKey, LedgerParameters.initialParameters().dust),
@@ -91,7 +101,32 @@ export async function buildMidnightWallet(config: MidnightConfig, seed: Uint8Arr
     await writeFile(`${stateFile}.tmp`, JSON.stringify({ shielded, unshielded, dust }), { mode: 0o600 });
     await rename(`${stateFile}.tmp`, stateFile);
   }
-  return { wallet, shieldedSecretKeys, dustSecretKey, unshieldedKeystore, saveState };
+  async function submitTransaction(tx: FinalizedTransaction): Promise<string> {
+    // The wallet SDK's node client disconnects between metadata and submission.
+    // HTTP submission avoids that lifecycle; midnight-js waits for indexer confirmation.
+    const { ApiPromise, HttpProvider } = await import('@polkadot/api');
+    const api = await ApiPromise.create({ provider: new HttpProvider(config.nodeUrl.replace(/^ws/, 'http')), noInitWarn: true });
+    try {
+      const send = api.tx.midnight?.sendMnTransaction;
+      if (!send) throw new Error('Node does not expose midnight.sendMnTransaction');
+      const response = await fetch(config.nodeUrl.replace(/^ws/, 'http'), {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'author_submitExtrinsic',
+          params: [send('0x' + Buffer.from(tx.serialize()).toString('hex')).toHex()] }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) throw new Error(`Node rejected submission: HTTP ${response.status}`);
+      const result = await response.json() as { result?: string; error?: { code: number; message: string } };
+      if (result.error) throw new Error(`Node rejected submission (${result.error.code}): ${result.error.message}`);
+      if (!result.result || !/^0x[0-9a-f]{64}$/i.test(result.result)) throw new Error('Node returned no transaction hash');
+      const id = tx.identifiers().at(-1);
+      if (!id) throw new Error('Submitted transaction has no identifier');
+      return id;
+    } finally {
+      await api.disconnect();
+    }
+  }
+  return { wallet, shieldedSecretKeys, dustSecretKey, unshieldedKeystore, saveState, submitTransaction };
 }
 
 export function waitForWalletState(
@@ -117,7 +152,7 @@ export function createWalletAndMidnightProvider(
       const signed = await ctx.wallet.signRecipe(recipe, (data) => ctx.unshieldedKeystore.signData(data));
       return ctx.wallet.finalizeRecipe(signed);
     },
-    submitTx: (tx) => ctx.wallet.submitTransaction(tx),
+    submitTx: (tx) => ctx.submitTransaction(tx),
   };
 }
 
@@ -135,7 +170,11 @@ export function withSponsoredFees(provider: WalletProvider & MidnightProvider, o
         body: Uint8Array.from(tx.serialize()).buffer,
         signal: AbortSignal.timeout(180_000),
       });
-      if (!response.ok) throw new Error(`1AM fee sponsorship failed: HTTP ${response.status}`);
+      if (!response.ok) {
+        const retryAfter = response.headers.get('retry-after');
+        const detail = response.status === 429 ? await response.json().catch(() => ({})) as { error?: string; message?: string } : {};
+        throw new Error(`1AM fee sponsorship failed: HTTP ${response.status}${retryAfter ? `; retry after ${retryAfter}` : ''}${typeof detail.error === 'string' ? `; ${detail.error}` : ''}`);
+      }
       const result = await response.json() as { txBytes?: unknown; tx?: unknown };
       const hex = result.txBytes ?? result.tx;
       if (typeof hex !== "string" || !/^(?:[0-9a-f]{2})+$/i.test(hex)) throw new Error("Invalid sponsored transaction encoding");

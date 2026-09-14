@@ -1,3 +1,4 @@
+import "./websocket.js";
 export {
   midnightConfigFromEnv,
   assertMidnightConfig,
@@ -17,3 +18,5 @@ export {
   type SettleArgs as MidnightSettleContractArgs,
   type RefundArgs as MidnightRefundArgs,
 } from "./midnight-contract.js";
+
+export { connectAvtarEscrow } from "./midnight-live.js";

@@ -41,3 +41,47 @@ is set; keep using the same password if you override it.
 The wallet adapter implements `getCoinPublicKey`, `getEncryptionPublicKey`,
 `balanceTx` (balance → sign → finalize), and `submitTx`. The workspace pins the
 ledger/runtime versions used by `midnight-js` 4.1.1 to avoid duplicate WASM types.
+
+Live application settlement uses `connectAvtarEscrow` and the same compiled keys.
+The client checks the deployed verifier keys before making calls, proves locally,
+balances the wallet's unshielded tokens, submits through HTTP, and waits for
+indexer confirmation. For the tested 1AM route, set:
+
+```sh
+MIDNIGHT_NODE_URL=https://api-preprod.1am.xyz/rpc/midnight
+MIDNIGHT_FEE_SPONSOR_URL=https://api-preprod.1am.xyz
+MIDNIGHT_LOCAL_SIM=false
+MIDNIGHT_DEPOSITOR_ADDRESS=<funding wallet's 64-character unshielded address payload>
+MIDNIGHT_PROVIDER_ADDRESS=<recipient's 64-character unshielded address payload>
+MIDNIGHT_TOKEN_ADDRESS=<64-character unshielded token type>
+```
+
+The provider and consumer load the root `.env`, then use this package's `.env`
+for missing settings. Set `MIDNIGHT_LOCAL_SIM=true` explicitly to use simulation;
+this takes precedence even when wallet credentials exist. Live mode never invents
+addresses or transaction IDs.
+
+After building the whole workspace, start the provider and consumer with their
+`serve` scripts. Send a message to `POST /chat` on the consumer, then `POST /settle`.
+The provider advertises the configured network. Local simulation and live providers
+cannot be mixed in one session. A new session settles the previous escrow first;
+zero-usage sessions use a signed zero-unit voucher to refund their deposit.
+
+`pnpm midnight:live-check` is an opt-in integration check against the latest local
+Preprod deployment receipt. It escrows 1,000 atomic tNIGHT, calls the three real
+service APIs, and settles 300 atomic units. Both payment and refund go to the same
+owned wallet. It uses 1AM-sponsored DUST and saves the public result in
+`.midnight/preprod/live-check.json`. It requires the agent packages to be built.
+Sponsor rate limits are reported as errors; no simulated success is returned.
+
+If sponsorship is temporarily held after channel funding, keep the metering
+SQLite database. Resume the existing voucher without opening another escrow:
+
+```sh
+node midnight/recover-settlement.mjs /path/to/meter.db [channel-id]
+```
+
+Recovery retries rate-limited sponsorship at 60-second intervals (at most six
+attempts), then verifies the channel is closed on-chain. A still-active hold is
+reported as a failure with the database retained. The old deployment is not
+upgraded automatically: compile, deploy, and set the newly confirmed address.

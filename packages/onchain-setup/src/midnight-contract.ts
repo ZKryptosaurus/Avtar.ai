@@ -49,11 +49,8 @@ export interface RefundArgs {
  * here to the full stateful lifecycle: `whitelistToken` → `openChannel` →
  * `settle` → `refund`, with real ledger state threaded through each call.
  *
- * Two uses: (1) tests/demos that want to exercise the *actual compiled
- * circuit's* state machine without a live Midnight network, and (2) the
- * foundation a real chain-backed client will call into once the deploy SDK
- * version question (see `midnight/deploy.mjs`) is resolved — proof
- * generation and submission wrap around exactly these same circuit calls.
+ * Use this for local tests and demos. Live application calls use
+ * connectAvtarEscrow, which proves and submits these same compiled circuits.
  */
 export class LocalAvtarEscrowContract {
   readonly contractAddress: ContractAddress;

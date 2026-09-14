@@ -24,7 +24,8 @@
     "build": "tsc -b",
     "clean": "rm -rf dist *.tsbuildinfo",
     "test": "node midnight/selfcheck.mjs && node midnight/wallet-selfcheck.mjs",
-    "midnight:deploy": "node midnight/deploy.mjs"
+    "midnight:deploy": "node midnight/deploy.mjs",
+    "midnight:live-check": "node midnight/live-selfcheck.mjs"
   },
   "dependencies": {
     "@midnight-ntwrk/compact-js": "^2.5.1",
@@ -44,6 +45,7 @@
     "@midnight-ntwrk/wallet-sdk-hd": "3.0.2",
     "@midnight-ntwrk/wallet-sdk-shielded": "3.0.1",
     "@midnight-ntwrk/wallet-sdk-unshielded-wallet": "3.1.0",
+    "@polkadot/api": "16.5.6",
     "bip39": "^3.1.0",
     "buffer": "^6.0.3",
     "dotenv": "^16.4.5",

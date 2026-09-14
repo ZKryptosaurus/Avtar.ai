@@ -59,6 +59,7 @@ struct ChannelRecord {
   depositor: Bytes<32>;
   provider: Bytes<32>;
   token: Bytes<32>;
+  escrowAmount: Uint<128>;
   closed: Boolean;
 }
 
@@ -97,6 +98,7 @@ export circuit openChannel(
       depositor: depositor,
       provider: provider,
       token: token,
+      escrowAmount: amount,
       closed: false
     })
   );
@@ -130,6 +132,7 @@ export circuit settle(
   assert(record.depositor == depositor, "depositor mismatch");
   assert(record.provider == provider, "provider mismatch");
   assert(record.token == token, "token mismatch");
+  assert(record.escrowAmount == escrowAmount, "channel escrow mismatch");
 
   const rateCommitment = persistentHash<Vector<2, Field>>([rate as Field, rateBlind]);
   assert(record.rateCommitment == rateCommitment, "rate commitment mismatch");
@@ -176,6 +179,18 @@ export circuit settle(
       disclose(right<ContractAddress, UserAddress>(UserAddress { bytes: depositor }))
     );
   }
+
+  // Mark channel as closed to prevent repeat settlement
+  channels.insert(disclose(channelId), disclose(ChannelRecord {
+    rateCommitment: record.rateCommitment,
+    consumerPubkeyX: record.consumerPubkeyX,
+    consumerPubkeyY: record.consumerPubkeyY,
+    depositor: record.depositor,
+    provider: record.provider,
+    token: record.token,
+    escrowAmount: record.escrowAmount,
+    closed: true
+  }));
 }
 
 export circuit refund(depositor: Bytes<32>, token: Bytes<32>): [] {

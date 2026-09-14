@@ -28,6 +28,7 @@ export interface SettleArgs extends SettlementResult {
 export interface ChainClient {
   openChannel(args: OpenChannelArgs): Promise<{ channelId: string; openTx: string }>;
   settle(args: SettleArgs): Promise<{ settleTx: string }>;
+  close?(): Promise<void>;
 }
 
 function shortHex(value: bigint): string {
@@ -58,10 +59,8 @@ export class MockChainClient implements ChainClient {
  * rejected exactly as it would be on-chain, because it's the same compiled
  * circuit doing the rejecting.
  *
- * This is the honest stand-in for a live network client until the deploy SDK
- * version question is resolved (see `onchain-setup/midnight/deploy.mjs`) —
- * once it is, a live client wraps proof generation + submission around the
- * same circuit calls this class already makes.
+ * LiveAvtarEscrowChainClient uses the same compiled contract through the SDK,
+ * adding local proof generation, wallet balancing and confirmed submission.
  */
 export class LocalAvtarEscrowChainClient implements ChainClient {
   readonly #contract: LocalAvtarEscrowContract;
