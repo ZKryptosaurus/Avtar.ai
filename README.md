@@ -85,6 +85,12 @@ vouchers; the Compact proof establishes the settlement circuit's execution.
 - The provider keeps its meter registry in memory. The consumer persists recovery
   material, including its channel signing key, in SQLite. Keep that database private.
 
+## Deployed Contracts
+
+| Contract | Network | Address |
+| --- | --- | --- |
+| `avtar-escrow` | Midnight Preprod | `31392a81f598ea6553a3ac2dd38d39664530fda0a86b0a9e3957bc6e76dd0c1f` |
+
 ## Quick Start
 
 Run all commands from the repository root (`Avtar.ai`). Use Node.js 25.8.1
@@ -121,7 +127,7 @@ MIDNIGHT_NODE_URL=https://api-preprod.1am.xyz/rpc/midnight
 MIDNIGHT_PROOF_SERVER_URL=http://127.0.0.1:6300
 MIDNIGHT_FEE_SPONSOR_URL=https://api-preprod.1am.xyz
 MIDNIGHT_WALLET_SEED=<depositor wallet seed or mnemonic>
-MIDNIGHT_AVTAR_ESCROW_ADDRESS=<deployed contract address>
+MIDNIGHT_AVTAR_ESCROW_ADDRESS=31392a81f598ea6553a3ac2dd38d39664530fda0a86b0a9e3957bc6e76dd0c1f
 MIDNIGHT_DEPOSITOR_ADDRESS=<depositor's 64-character hex address payload>
 MIDNIGHT_PROVIDER_ADDRESS=<provider's 64-character hex address payload>
 MIDNIGHT_TOKEN_ADDRESS=<64-character tNIGHT token type>
