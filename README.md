@@ -5,6 +5,8 @@ on Midnight. A consumer buys weather, crypto-price, and translation calls from a
 provider, signs cumulative usage vouchers, and settles the session through the
 `avtar-escrow` Compact contract.
 
+[Slide deck](https://docs.google.com/presentation/d/1yFVQ4rT65PLrq5IZXwn16qvPiv66Z_J1/edit?usp=drivesdk&ouid=108868766921965307724&rtpof=true&sd=true) · [Demo video](https://youtu.be/9a2kZaGt7E4?feature=shared)
+
 The HTTP demo supports public Preprod with a local proof server. A separate local
 simulation runs the compiled circuit against an in-memory ledger.
 

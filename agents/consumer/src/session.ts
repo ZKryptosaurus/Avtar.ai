@@ -59,6 +59,8 @@ export interface SettleOutcome {
   steps: SettleStep[];
   /** On-chain settle transaction hash (or mock id). */
   settleTx?: string;
+  /** Explorer link for the settlement transaction (Preprod only). */
+  explorerUrl?: string;
   /** Total metered units in the final voucher. */
   totalUnits?: string;
   /** settlement_amount = totalUnits · rate, in token base units. */
@@ -367,10 +369,16 @@ export class AgentSession {
       steps.push({ kind: "done", label: "Settlement complete", detail: settled.settleTx });
 
       await this.#teardown();
+      const network = midnightSettlementNetwork();
+      const explorerUrl =
+        network === "midnight:preprod" && settled.settleTx && !settled.settleTx.startsWith("local_")
+          ? `https://preprod.midnightexplorer.com/transactions/${settled.settleTx}`
+          : undefined;
       return {
         settled: true,
         steps,
         settleTx: settled.settleTx,
+        explorerUrl,
         totalUnits: totalUnits.toString(),
         settlementAmount: settlementAmount.toString(),
         escrow: snapshot.terms.escrow.toString(),
